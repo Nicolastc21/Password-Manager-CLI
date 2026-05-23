@@ -20,6 +20,10 @@ class PasswordManager:
         if self.cipher is None:
             raise ValueError("No encryption key loaded. Create or load a key first.")
 
+    def _require_vault(self):
+        if self.password_file is None:
+            raise ValueError("No password file loaded. Create or load a password file first.")
+
     def create_key(self, path):
         if Fernet is None:
             raise ImportError("Missing dependency: install 'cryptography' to use PasswordManager.")
@@ -35,6 +39,10 @@ class PasswordManager:
     def load_key(self, path):
         if Fernet is None:
             raise ImportError("Missing dependency: install 'cryptography' to use PasswordManager.")
+            
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Key file not found: '{path}'")
+            
         with open(path, 'rb') as f:
             self.key = f.read()
 
@@ -52,8 +60,7 @@ class PasswordManager:
             
         self.password_file = path
         self.password_dict = {}
-        
-        # Write all entries atomically
+
         with open(path, 'w') as f:
             if initial_values:
                 for site, password in initial_values.items():
@@ -65,6 +72,10 @@ class PasswordManager:
     
     def load_password_file(self, path):
         self._require_key()
+        
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Vault file not found: '{path}'")
+            
         self.password_file = path
         self.password_dict = {}
         
@@ -76,17 +87,19 @@ class PasswordManager:
                 if ':' not in line:
                     continue
                 site, encrypted = line.split(':', 1)
+                if not encrypted:
+                    continue
                 try:
                     self.password_dict[site] = self.cipher.decrypt(encrypted.encode()).decode()
-                except InvalidToken:
-                    raise InvalidToken(f"Failed to decrypt entry for '{site}'. Wrong key?")
+                except (InvalidToken, ValueError) as exc:
+                    if InvalidToken is None:
+                        raise  
+                    raise InvalidToken(f"Failed to decrypt entry for '{site}'. Wrong key?") from exc
     
     def add_password(self, site, password):
         self._require_key()
-        
-        if self.password_file is None:
-            raise ValueError("No password file loaded. Create or load a password file first.")
-            
+        self._require_vault()
+                    
         if not site:
             raise ValueError("Site name cannot be empty.")
         if not password:
@@ -103,6 +116,20 @@ class PasswordManager:
         if site not in self.password_dict:
             raise KeyError(f"No password found for '{site}'")
         return self.password_dict[site]
+        
+    def delete_password(self, site):
+        self._require_vault()
+        if site not in self.password_dict:
+            raise KeyError(f"No password found for '{site}'")
+        del self.password_dict[site]
+
+        with open(self.password_file, 'w') as f:
+            for s, p in self.password_dict.items():
+                encrypted = self.cipher.encrypt(p.encode()).decode()
+                f.write(s + ":" + encrypted + "\n")
+                
+    def list_sites(self):
+        return sorted(self.password_dict.keys())
 
 
 def main():
@@ -118,8 +145,10 @@ def main():
         print("  4. Load an existing password file")
         print("  5. Add a new password")
         print("  6. Get a password")
-        print("  7. Exit")
-        choice = input("\nChoose an option (1-7): ").strip()
+        print("  7. Delete a password")
+        print("  8. List all sites")
+        print("  9. Exit")
+        choice = input("\nChoose an option (1-9): ").strip()
         
         if choice == "1":
             path = input("Enter the path to save the new key (e.g., secret.key): ")
@@ -133,8 +162,8 @@ def main():
             try:
                 pm.load_key(path)
                 print("Key loaded successfully!")
-            except FileNotFoundError:
-                print("Key file not found.")
+            except FileNotFoundError as exc:
+                print(f"Error: {exc}")
             except Exception as exc:
                 print(f"Error: {exc}")
         elif choice == "3":
@@ -148,9 +177,9 @@ def main():
             path = input("Enter the path to load the password file (e.g., vault.txt): ")
             try:
                 pm.load_password_file(path)
-                print("Password file loaded successfully!")
-            except FileNotFoundError:
-                print("Password file not found.")
+                print(f"Password file loaded successfully! ({len(pm.password_dict)} entries)")
+            except FileNotFoundError as exc:
+                print(f"Error: {exc}")
             except Exception as exc:
                 print(f"Error: {exc}")
         elif choice == "5":
@@ -166,15 +195,30 @@ def main():
             try:
                 stored_password = pm.get_password(site)
                 print(f"Password for '{site}': {stored_password}")
-            except KeyError:
-                print(f"No password found for '{site}'.")
+            except KeyError as exc:
+                print(f"Error: {exc}")
             except Exception as exc:
                 print(f"Error: {exc}")
         elif choice == "7":
+            site = input("Enter the site name to delete: ")
+            try:
+                pm.delete_password(site)
+                print(f"Password for '{site}' deleted successfully!")
+            except KeyError as exc:
+                print(f"Error: {exc}")
+            except Exception as exc:
+                print(f"Error: {exc}")
+        elif choice == "8":
+            sites = pm.list_sites()
+            if sites:
+                print("Stored sites: " + ", ".join(sites))
+            else:
+                print("No sites stored yet.")
+        elif choice == "9":
             print("Goodbye!")
             break
         else:
-            print("Invalid option. Please choose a number between 1 and 7.")
+            print("Invalid option. Please choose a number between 1 and 9.")
 
 
 if __name__ == "__main__":
